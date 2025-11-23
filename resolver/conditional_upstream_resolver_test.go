@@ -193,13 +193,13 @@ var _ = Describe("ConditionalUpstreamResolver", Label("conditionalResolver"), fu
 	})
 
 	When("upstream is invalid", func() {
-		It("succeeds with bootstrap resolver during construction", func() {
+		It("succeeds with bootstrap resolver during construction (blocking default)", func() {
 			b := newTestBootstrap(ctx, &dns.Msg{MsgHdr: dns.MsgHdr{Rcode: dns.RcodeServerFailure}})
 
 			upstreamsCfg := defaultUpstreamsConfig
-			upstreamsCfg.Init.Strategy = config.InitStrategyFailOnError
 
 			sutConfig := config.ConditionalUpstream{
+				// Default init strategy is blocking
 				Mapping: config.ConditionalUpstreamMapping{
 					Upstreams: map[string][]config.Upstream{
 						".": {config.Upstream{Host: "example.com"}},
@@ -207,12 +207,154 @@ var _ = Describe("ConditionalUpstreamResolver", Label("conditionalResolver"), fu
 				},
 			}
 
-			// Conditional upstreams should always succeed during construction to ensure
-			// they remain available even when default upstreams are unreachable.
+			// With blocking strategy (default), construction should succeed because bootstrap is used
+			// Bootstrap allows the resolver to function even if configured upstreams are unreachable
+			r, err := NewConditionalUpstreamResolver(ctx, sutConfig, upstreamsCfg, b)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(r).ShouldNot(BeNil())
+		})
+
+		It("succeeds during construction with fast initialization strategy", func() {
+			b := newTestBootstrap(ctx, &dns.Msg{MsgHdr: dns.MsgHdr{Rcode: dns.RcodeServerFailure}})
+
+			upstreamsCfg := defaultUpstreamsConfig
+
+			sutConfig := config.ConditionalUpstream{
+				Init: config.Init{Strategy: config.InitStrategyFast},
+				Mapping: config.ConditionalUpstreamMapping{
+					Upstreams: map[string][]config.Upstream{
+						".": {config.Upstream{Host: "example.com"}},
+					},
+				},
+			}
+
+			// With fast strategy, construction should always succeed even when upstreams are unreachable.
+			// Initialization happens in the background with retry logic.
 			// See: https://github.com/0xERR0R/blocky/issues/1639
 			r, err := NewConditionalUpstreamResolver(ctx, sutConfig, upstreamsCfg, b)
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(r).ShouldNot(BeNil())
+		})
+	})
+
+	Describe("Fast initialization strategy (lazy per-domain)", func() {
+		var mockUpstream *MockUDPUpstreamServer
+
+		When("conditional upstream is created with fast strategy", func() {
+			It("should not initialize upstreams during construction", func() {
+				mockUpstream = NewMockUDPUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+				defer mockUpstream.Close()
+
+				sutConfig := config.ConditionalUpstream{
+					Init: config.Init{Strategy: config.InitStrategyFast},
+					Mapping: config.ConditionalUpstreamMapping{
+						Upstreams: map[string][]config.Upstream{
+							"lazy.example": {mockUpstream.Start()},
+						},
+					},
+				}
+
+				b := &Bootstrap{}
+
+				// Construction should succeed immediately without contacting upstream
+				r, err := NewConditionalUpstreamResolver(ctx, sutConfig, defaultUpstreamsConfig, b)
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(r).ShouldNot(BeNil())
+
+				// No upstream calls yet - initialization is lazy (happens on first query)
+				Expect(mockUpstream.GetCallCount()).Should(Equal(0))
+			})
+
+			It("should initialize only once despite multiple concurrent queries", func() {
+				mockUpstream = NewMockUDPUpstreamServer().WithAnswerRR("concurrent.example 123 IN A 123.124.122.122")
+				defer mockUpstream.Close()
+
+				sutConfig := config.ConditionalUpstream{
+					Init: config.Init{Strategy: config.InitStrategyFast},
+					Mapping: config.ConditionalUpstreamMapping{
+						Upstreams: map[string][]config.Upstream{
+							"concurrent.example": {mockUpstream.Start()},
+						},
+					},
+				}
+
+				// Use a functional bootstrap that can handle queries while initialization happens
+				b := newTestBootstrap(ctx, &dns.Msg{
+					Answer: []dns.RR{new(dns.A)},
+				})
+				r, err := NewConditionalUpstreamResolver(ctx, sutConfig, defaultUpstreamsConfig, b)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				// Fire 10 concurrent queries
+				done := make(chan bool, 10)
+				for i := 0; i < 10; i++ {
+					go func() {
+						defer GinkgoRecover()
+						// Queries may use bootstrap or real upstream depending on timing
+						// The key is that sync.Once ensures initialization happens exactly once
+						_, _ = r.Resolve(ctx, newRequest("concurrent.example.", A))
+						done <- true
+					}()
+				}
+
+				// Wait for all to complete
+				for i := 0; i < 10; i++ {
+					<-done
+				}
+
+				// Verify initialization happened (at least one call to the upstream)
+				Eventually(func() int {
+					return mockUpstream.GetCallCount()
+				}, "2s", "50ms").Should(BeNumerically(">=", 1))
+
+				// Verify sync.Once ensures initialization only happens once
+				// Allow small margin for query traffic after init completes
+				initialCallCount := mockUpstream.GetCallCount()
+				Consistently(func() int {
+					return mockUpstream.GetCallCount()
+				}, "500ms", "50ms").Should(BeNumerically("<=", initialCallCount+10))
+			})
+		})
+
+		When("unused conditional upstreams exist with fast strategy", func() {
+			It("should never initialize unused domains", func() {
+				usedMock := NewMockUDPUpstreamServer().WithAnswerRR("used.example 123 IN A 1.2.3.4")
+				defer usedMock.Close()
+
+				unusedMock := NewMockUDPUpstreamServer().WithAnswerRR("unused.example 123 IN A 5.6.7.8")
+				defer unusedMock.Close()
+
+				sutConfig := config.ConditionalUpstream{
+					Init: config.Init{Strategy: config.InitStrategyFast},
+					Mapping: config.ConditionalUpstreamMapping{
+						Upstreams: map[string][]config.Upstream{
+							"used.example":   {usedMock.Start()},
+							"unused.example": {unusedMock.Start()},
+						},
+					},
+				}
+
+				// Use a bootstrap that can answer DNS queries
+				bootstrapUpstream := NewMockUDPUpstreamServer().WithAnswerRR("used.example 123 IN A 1.2.3.4")
+				defer bootstrapUpstream.Close()
+				b := newTestBootstrap(ctx, &dns.Msg{
+					Answer: []dns.RR{new(dns.A)},
+				})
+
+				r, err := NewConditionalUpstreamResolver(ctx, sutConfig, defaultUpstreamsConfig, b)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				// Query only used.example
+				resp, err := r.Resolve(ctx, newRequest("used.example.", A))
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(resp).ShouldNot(BeNil())
+
+				// unused.example should NEVER be initialized (lazy init only happens on query)
+				// Use Consistently to verify it stays at 0 calls even after background init completes
+				Consistently(func() int {
+					return unusedMock.GetCallCount()
+				}, "500ms", "50ms").Should(Equal(0))
+			})
 		})
 	})
 

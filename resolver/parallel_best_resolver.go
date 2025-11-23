@@ -103,7 +103,9 @@ func NewParallelBestResolver(
 	return initGroupResolvers(ctx, r, cfg, bootstrap)
 }
 
-func newParallelBestResolver(cfg config.UpstreamGroup, resolvers []Resolver) *ParallelBestResolver {
+func newParallelBestResolver(
+	cfg config.UpstreamGroup, resolvers []Resolver,
+) *ParallelBestResolver {
 	typeName := "parallel_best"
 	resolverCount := parallelBestResolverCount
 	retryWithDifferentResolver := false
