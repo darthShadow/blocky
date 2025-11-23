@@ -64,6 +64,14 @@ customDNS:
 # optional: definition, which DNS resolver(s) should be used for queries to the domain (with all sub-domains). Multiple resolvers must be separated by a comma
 # Example: Query client.fritz.box will ask DNS server 192.168.178.1. This is necessary for local network, to resolve clients by host name
 conditional:
+  # optional: Configure initialization strategy for conditional upstreams
+  init:
+    # accepted: blocking, failOnError, fast
+    # default: blocking
+    # blocking: Initialize all conditional upstreams at startup, fail if any are unreachable
+    # failOnError: Initialize all conditional upstreams at startup, continue even if some fail
+    # fast: Lazy initialization on first use with background retries (avoids startup delays for unused domains)
+    strategy: blocking
   # optional: if false (default), return empty result if after rewrite, the mapped resolver returned an empty answer. If true, the original query will be sent to the upstream resolver
   # Example: The query "blog.example.com" will be rewritten to "blog.fritz.box" and also redirected to the resolver at 192.168.178.1. If not found and if `fallbackUpstream` was set to `true`, the original query "blog.example.com" will be sent upstream.
   # Usage: One usecase when having split DNS for internal and external (internet facing) users, but not all subdomains are listed in the internal domain.

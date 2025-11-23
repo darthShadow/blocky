@@ -416,6 +416,12 @@ The optional parameter `rewrite` behaves the same as with custom DNS.
 
 The optional parameter `fallbackUpstream`, if false (default), return empty result if after rewrite, the mapped resolver returned an empty answer. If true, the original query will be sent to the upstream resolver.
 
+The optional parameter `init.strategy` controls the initialization behavior of conditional upstream resolvers. This uses the same strategies as the main upstreams configuration (see [Init Strategy](#init-strategy)):
+
+- `blocking` (default): Blocky will initialize all conditional upstreams during startup and fail if any are unreachable
+- `failOnError`: Blocky will initialize all conditional upstreams during startup but continue even if some fail
+- `fast`: Blocky starts immediately with lazy initialization - conditional upstreams are initialized on first use with background retries. This avoids startup delays for domains that may never be queried
+
 **Usage:** One usecase when having split DNS for internal and external (internet facing) users, but not all subdomains are listed in the internal domain
 
 !!! example

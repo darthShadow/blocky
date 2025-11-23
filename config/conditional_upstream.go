@@ -11,6 +11,7 @@ import (
 type ConditionalUpstream struct {
 	RewriterConfig `yaml:",inline"`
 
+	Init    Init                       `yaml:"init"`
 	Mapping ConditionalUpstreamMapping `yaml:"mapping"`
 }
 
@@ -26,6 +27,8 @@ func (c *ConditionalUpstream) IsEnabled() bool {
 
 // LogConfig implements `config.Configurable`.
 func (c *ConditionalUpstream) LogConfig(logger *logrus.Entry) {
+	c.Init.LogConfig(logger)
+
 	for key, val := range c.Mapping.Upstreams {
 		logger.Infof("%s = %v", key, val)
 	}
