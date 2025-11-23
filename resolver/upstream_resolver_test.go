@@ -114,7 +114,7 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 			})
 		})
 		When("Configured DNS resolver returns ServFail", func() {
-			It("should return error", func() {
+			It("should return error (default behavior)", func() {
 				mockUpstream := NewMockUDPUpstreamServer().WithAnswerError(dns.RcodeServerFailure)
 
 				sutConfig.Upstream = mockUpstream.Start()
@@ -125,6 +125,19 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 
 				var servErr *UpstreamServerError
 				Expect(errors.As(err, &servErr)).Should(BeTrue())
+			})
+
+			It("should return response when errorOnServFail is false", func() {
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerError(dns.RcodeServerFailure)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sutConfig.ErrorOnServFail = false
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				resp, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(resp).ShouldNot(BeNil())
+				Expect(resp.Res.Rcode).Should(Equal(dns.RcodeServerFailure))
 			})
 		})
 		When("Timeout occurs", func() {
@@ -229,6 +242,208 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 								HaveTTL(BeNumerically("==", 123)),
 							))
 				})
+			})
+		})
+
+		When("TCP/UDP racing with different response qualities", func() {
+			var (
+				udpServer *dns.Server
+				tcpServer *dns.Server
+				port      uint16
+			)
+
+			// Helper to start both TCP and UDP servers on the same port
+			startDualProtocolServer := func(udpHandler, tcpHandler dns.HandlerFunc) config.Upstream {
+				// Find available port
+				udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+				Expect(err).ShouldNot(HaveOccurred())
+				udpConn, err := net.ListenUDP("udp", udpAddr)
+				Expect(err).ShouldNot(HaveOccurred())
+				port = uint16(udpConn.LocalAddr().(*net.UDPAddr).Port)
+
+				// Start UDP server
+				udpServer = &dns.Server{
+					PacketConn: udpConn,
+					Handler:    udpHandler,
+				}
+				go func() {
+					defer GinkgoRecover()
+					_ = udpServer.ActivateAndServe()
+				}()
+
+				// Start TCP server on same port
+				tcpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+				Expect(err).ShouldNot(HaveOccurred())
+				tcpListener, err := net.ListenTCP("tcp", tcpAddr)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				tcpServer = &dns.Server{
+					Listener: tcpListener,
+					Handler:  tcpHandler,
+				}
+				go func() {
+					defer GinkgoRecover()
+					_ = tcpServer.ActivateAndServe()
+				}()
+
+				// Wait for servers to start
+				time.Sleep(50 * time.Millisecond)
+
+				return config.Upstream{
+					Net:  config.NetProtocolTcpUdp,
+					Host: "127.0.0.1",
+					Port: port,
+				}
+			}
+
+			AfterEach(func() {
+				if udpServer != nil {
+					_ = udpServer.Shutdown()
+				}
+				if tcpServer != nil {
+					_ = tcpServer.Shutdown()
+				}
+			})
+
+			It("should prefer success over SERVFAIL (UDP=SERVFAIL, TCP=success)", func() {
+				udpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp := &dns.Msg{}
+					resp.SetRcode(req, dns.RcodeServerFailure)
+					_ = w.WriteMsg(resp)
+				})
+
+				tcpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp, _ := util.NewMsgWithAnswer("example.com.", 123, A, "123.124.122.122")
+					resp.SetReply(req)
+					_ = w.WriteMsg(resp)
+				})
+
+				sutConfig.Upstream = startDualProtocolServer(udpHandler, tcpHandler)
+				sutConfig.ErrorOnServFail = false
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				resp, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(resp.Res.Rcode).Should(Equal(dns.RcodeSuccess))
+				Expect(resp.Res.Answer).Should(HaveLen(1))
+			})
+
+			It("should prefer success over SERVFAIL (UDP=success, TCP=SERVFAIL)", func() {
+				udpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp, _ := util.NewMsgWithAnswer("example.com.", 123, A, "123.124.122.122")
+					resp.SetReply(req)
+					_ = w.WriteMsg(resp)
+				})
+
+				tcpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp := &dns.Msg{}
+					resp.SetRcode(req, dns.RcodeServerFailure)
+					_ = w.WriteMsg(resp)
+				})
+
+				sutConfig.Upstream = startDualProtocolServer(udpHandler, tcpHandler)
+				sutConfig.ErrorOnServFail = false
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				resp, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(resp.Res.Rcode).Should(Equal(dns.RcodeSuccess))
+				Expect(resp.Res.Answer).Should(HaveLen(1))
+			})
+
+			It("should prefer non-truncated over truncated (UDP=truncated, TCP=complete)", func() {
+				udpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp, _ := util.NewMsgWithAnswer("example.com.", 123, A, "123.124.122.122")
+					resp.SetReply(req)
+					resp.Truncated = true
+					_ = w.WriteMsg(resp)
+				})
+
+				tcpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp, _ := util.NewMsgWithAnswer("example.com.", 123, A, "123.124.122.122")
+					resp.SetReply(req)
+					resp.Truncated = false
+					_ = w.WriteMsg(resp)
+				})
+
+				sutConfig.Upstream = startDualProtocolServer(udpHandler, tcpHandler)
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				resp, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(resp.Res.Truncated).Should(BeFalse())
+			})
+
+			It("should prefer non-SERVFAIL over SERVFAIL when both truncated", func() {
+				udpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp := &dns.Msg{}
+					resp.SetRcode(req, dns.RcodeServerFailure)
+					resp.Truncated = true
+					_ = w.WriteMsg(resp)
+				})
+
+				tcpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp, _ := util.NewMsgWithAnswer("example.com.", 123, A, "123.124.122.122")
+					resp.SetReply(req)
+					resp.Truncated = true
+					_ = w.WriteMsg(resp)
+				})
+
+				sutConfig.Upstream = startDualProtocolServer(udpHandler, tcpHandler)
+				sutConfig.ErrorOnServFail = false
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				resp, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(resp.Res.Rcode).Should(Equal(dns.RcodeSuccess))
+			})
+
+			It("should prefer non-truncated over truncated when both SERVFAIL", func() {
+				udpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp := &dns.Msg{}
+					resp.SetRcode(req, dns.RcodeServerFailure)
+					resp.Truncated = true
+					_ = w.WriteMsg(resp)
+				})
+
+				tcpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+					resp := &dns.Msg{}
+					resp.SetRcode(req, dns.RcodeServerFailure)
+					resp.Truncated = false
+					_ = w.WriteMsg(resp)
+				})
+
+				sutConfig.Upstream = startDualProtocolServer(udpHandler, tcpHandler)
+				sutConfig.ErrorOnServFail = false
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				resp, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(resp.Res.Rcode).Should(Equal(dns.RcodeServerFailure))
+				Expect(resp.Res.Truncated).Should(BeFalse())
+			})
+
+			It("should use protocol preference as tiebreaker when quality equal", func() {
+				// Both return identical good responses, should prefer downstream protocol (UDP)
+				goodResponse := func(w dns.ResponseWriter, req *dns.Msg) {
+					resp, _ := util.NewMsgWithAnswer("example.com.", 123, A, "123.124.122.122")
+					resp.SetReply(req)
+					_ = w.WriteMsg(resp)
+				}
+
+				sutConfig.Upstream = startDualProtocolServer(
+					dns.HandlerFunc(goodResponse),
+					dns.HandlerFunc(goodResponse),
+				)
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				// Make UDP request
+				req := newRequest("example.com.", A)
+				req.Protocol = RequestProtocolUDP
+
+				resp, err := sut.Resolve(ctx, req)
+				Expect(err).Should(Succeed())
+				Expect(resp.Res.Rcode).Should(Equal(dns.RcodeSuccess))
 			})
 		})
 	})

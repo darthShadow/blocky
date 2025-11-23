@@ -15,12 +15,13 @@ type Retry struct {
 
 // Upstreams upstream servers configuration
 type Upstreams struct {
-	Init      Init             `yaml:"init"`
-	Timeout   Duration         `default:"2s"            yaml:"timeout"` // always > 0
-	Groups    UpstreamGroups   `yaml:"groups"`
-	Strategy  UpstreamStrategy `default:"parallel_best" yaml:"strategy"`
-	UserAgent string           `yaml:"userAgent"`
-	Retry     Retry            `yaml:"retry"`
+	Init             Init             `yaml:"init"`
+	Timeout          Duration         `default:"2s"            yaml:"timeout"` // always > 0
+	Groups           UpstreamGroups   `yaml:"groups"`
+	Strategy         UpstreamStrategy `default:"parallel_best" yaml:"strategy"`
+	UserAgent        string           `yaml:"userAgent"`
+	Retry            Retry            `yaml:"retry"`
+	ErrorOnServFail  bool             `default:"true"          yaml:"errorOnServFail"`
 }
 
 type UpstreamGroups map[string][]Upstream
@@ -55,6 +56,7 @@ func (c *Upstreams) LogConfig(logger *logrus.Entry) {
 		totalAttempts = 1 + c.Retry.Attempts
 	}
 	logger.Infof("retry: enabled=%t, retries=%d (total attempts=%d)", c.Retry.Enabled, c.Retry.Attempts, totalAttempts)
+	logger.Info("errorOnServFail: ", c.ErrorOnServFail)
 	logger.Info("strategy: ", c.Strategy)
 	logger.Info("groups:")
 
