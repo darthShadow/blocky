@@ -294,11 +294,6 @@ func (r *dnsUpstreamClient) raceClients(
 
 	exchange := func(client *dns.Client, proto model.RequestProtocol) {
 		msg, rtt, err := client.ExchangeContext(ctx, msg, upstreamURL)
-
-		if err == nil && msg.Rcode == dns.RcodeServerFailure {
-			err = &UpstreamServerError{msg}
-		}
-
 		ch <- exchangeResult{proto, msg, rtt, err}
 	}
 
@@ -308,35 +303,77 @@ func (r *dnsUpstreamClient) raceClients(
 	// We don't care about a response too big for the downstream protocol: that's handled by `Server`,
 	// and returning a larger request from here might allow us to cache it.
 
-	res1 := <-ch
-	if res1.err == nil && !res1.msg.Truncated {
-		return res1.msg, res1.rtt, nil
+	// Helper: A "good" response has no error, is not SERVFAIL, and is not truncated
+	isGood := func(res *exchangeResult) bool {
+		return res.err == nil && res.msg.Rcode != dns.RcodeServerFailure && !res.msg.Truncated
 	}
 
-	res2 := <-ch
-	if res2.err == nil && !res2.msg.Truncated {
-		return res2.msg, res2.rtt, nil
+	// Receive first response (whichever protocol responds first)
+	first := <-ch
+	if isGood(&first) {
+		return first.msg, first.rtt, nil
 	}
 
-	resWhere := func(pred func(*exchangeResult) bool) *exchangeResult {
-		if pred(&res1) {
-			return &res1
+	// First response has issues, wait for second
+	second := <-ch
+	if isGood(&second) {
+		return second.msg, second.rtt, nil
+	}
+
+	// Both responses have issues - select the better one based on priority:
+	// 1. Valid DNS response (no network error) > network error
+	// 2. Non-SERVFAIL > SERVFAIL
+	// 3. Non-truncated > truncated
+	// 4. Matching protocol (tiebreaker)
+
+	// Helper: Select the result where the condition is true for one but not the other
+	// Returns nil if both have the same condition value (tie)
+	selectWhere := func(condition func(*exchangeResult) bool) *exchangeResult {
+		firstMatches := condition(&first)
+		secondMatches := condition(&second)
+
+		if firstMatches && !secondMatches {
+			return &first
 		}
-
-		return &res2
+		if !firstMatches && secondMatches {
+			return &second
+		}
+		return nil // both equal on this criterion
 	}
 
-	// When both failed, return the result that used the same protocol as the downstream request
-	if res1.err != nil && res2.err != nil {
-		sameProto := resWhere(func(r *exchangeResult) bool { return r.proto == protocol })
-
-		return sameProto.msg, sameProto.rtt, sameProto.err
+	// Priority 1: Prefer responses without network errors
+	if better := selectWhere(func(r *exchangeResult) bool { return r.err == nil }); better != nil {
+		return better.msg, better.rtt, nil
 	}
 
-	// Only a single one failed, use the one that succeeded
-	successful := resWhere(func(r *exchangeResult) bool { return r.err == nil })
+	// If both have network errors - use protocol as tiebreaker
+	if first.err != nil && second.err != nil {
+		if first.proto == protocol {
+			return first.msg, first.rtt, first.err
+		}
+		return second.msg, second.rtt, second.err
+	}
 
-	return successful.msg, successful.rtt, nil
+	// Both are valid DNS responses (no network errors) but have other issues
+	// Priority 2: Prefer non-SERVFAIL over SERVFAIL
+	if better := selectWhere(func(r *exchangeResult) bool {
+		return r.msg.Rcode != dns.RcodeServerFailure
+	}); better != nil {
+		return better.msg, better.rtt, nil
+	}
+
+	// Priority 3: Both have same SERVFAIL status - prefer non-truncated
+	if better := selectWhere(func(r *exchangeResult) bool {
+		return !r.msg.Truncated
+	}); better != nil {
+		return better.msg, better.rtt, nil
+	}
+
+	// Priority 4: Both have same quality - use protocol as tiebreaker
+	if first.proto == protocol {
+		return first.msg, first.rtt, nil
+	}
+	return second.msg, second.rtt, nil
 }
 
 // NewUpstreamResolver creates new resolver instance
@@ -464,6 +501,11 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// Conditionally treat SERVFAIL as error based on config
+	if r.cfg.ErrorOnServFail && resp.Rcode == dns.RcodeServerFailure {
+		return nil, &UpstreamServerError{Msg: resp}
 	}
 
 	return &model.Response{Res: resp, Reason: fmt.Sprintf("RESOLVED (%s)", r.cfg)}, nil

@@ -561,6 +561,41 @@ var _ = Describe("CachingResolver", func() {
 		})
 	})
 
+	Describe("SERVFAIL responses should not be cached", func() {
+		When("Upstream resolver returns SERVFAIL", func() {
+			BeforeEach(func() {
+				mockAnswer.Rcode = dns.RcodeServerFailure
+			})
+
+			It("response shouldn't be cached", func() {
+				By("first request", func() {
+					Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+						Should(SatisfyAll(
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeServerFailure),
+							HaveNoAnswer(),
+						))
+
+					Expect(m.Calls).Should(HaveLen(1))
+				})
+
+				By("second request should hit upstream again", func() {
+					Eventually(sut.Resolve).
+						WithContext(ctx).
+						WithArguments(newRequest("example.com.", A)).
+						Should(SatisfyAll(
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeServerFailure),
+							HaveNoAnswer(),
+						))
+
+					// should call upstream again since SERVFAIL is not cached
+					Expect(m.Calls).Should(HaveLen(2))
+				})
+			})
+		})
+	})
+
 	Describe("Not A / AAAA queries should also be cached", func() {
 		When("MX query will be performed", func() {
 			BeforeEach(func() {

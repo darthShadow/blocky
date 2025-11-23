@@ -38,6 +38,8 @@ upstreams:
     enabled: true
     # optional: Number of retry attempts (total attempts = 1 + retry attempts). Default: 2
     attempts: 2
+  # optional: Treat SERVFAIL responses as errors. When false, SERVFAIL responses are returned but not cached. Default: true
+  errorOnServFail: true
   # optional: HTTP User Agent when connecting to upstreams. Default: none
   userAgent: "custom UA"
 
