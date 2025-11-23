@@ -83,13 +83,15 @@ This applies to all of them. The default strategy is blocking.
 
 ## Upstreams configuration
 
-| Parameter               | Type                                 | Mandatory | Default value | Description                                    |
-| ----------------------- | ------------------------------------ | --------- | ------------- | ---------------------------------------------- |
-| upstreams.groups        | map of name to upstream              | yes       |               | Upstream DNS servers to use, in groups.        |
-| upstreams.init.strategy | enum (blocking, failOnError, fast)   | no        | blocking      | See [Init Strategy](#init-strategy) and below. |
-| upstreams.strategy      | enum (parallel_best, random, strict) | no        | parallel_best | Upstream server usage strategy.                |
-| upstreams.timeout       | duration                             | no        | 2s            | Upstream connection timeout.                   |
-| upstreams.userAgent     | string                               | no        |               | HTTP User Agent when connecting to upstreams.  |
+| Parameter                | Type                                 | Mandatory | Default value | Description                                                 |
+| ------------------------ | ------------------------------------ | --------- | ------------- | ----------------------------------------------------------- |
+| upstreams.groups         | map of name to upstream              | yes       |               | Upstream DNS servers to use, in groups.                     |
+| upstreams.init.strategy  | enum (blocking, failOnError, fast)   | no        | blocking      | See [Init Strategy](#init-strategy) and below.              |
+| upstreams.strategy       | enum (parallel_best, random, strict) | no        | parallel_best | Upstream server usage strategy.                             |
+| upstreams.timeout        | duration                             | no        | 2s            | Upstream connection timeout.                                |
+| upstreams.retry.enabled  | bool                                 | no        | true          | Enable automatic retry of failed upstream queries.          |
+| upstreams.retry.attempts | uint                                 | no        | 2             | Number of retry attempts (total attempts = 1 + retry attempts). |
+| upstreams.userAgent      | string                               | no        |               | HTTP User Agent when connecting to upstreams.               |
 
 For `init.strategy`, the "init" is testing the given resolvers for each group. The potentially fatal error, depending on the strategy, is if a group has no functional resolvers.
 

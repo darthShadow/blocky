@@ -148,7 +148,7 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 				sutConfig.Upstream = mockUpstream.Start()
 			})
 
-			It("should perform a retry with 3 attempts", func() {
+			It("should perform a retry with 2 retries (default = 3 total attempts)", func() {
 				By("2 attempts with timeout -> should resolve with third attempt", func() {
 					atomic.StoreInt32(&counter, 0)
 					atomic.StoreInt32(&attemptsWithTimeout, 2)
@@ -169,6 +169,41 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 					_, err := sut.Resolve(ctx, newRequest("example.com.", A))
 					Expect(err).Should(HaveOccurred())
 					Expect(err.Error()).Should(ContainSubstring("i/o timeout"))
+				})
+			})
+
+			It("should respect retry configuration when disabled", func() {
+				sutConfig.Retry.Enabled = false
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				By("1 attempt with timeout -> should return error immediately", func() {
+					atomic.StoreInt32(&counter, 0)
+					atomic.StoreInt32(&attemptsWithTimeout, 1)
+
+					_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+					Expect(err).Should(HaveOccurred())
+					Expect(err.Error()).Should(ContainSubstring("i/o timeout"))
+					Expect(atomic.LoadInt32(&counter)).Should(Equal(int32(1)))
+				})
+			})
+
+			It("should respect custom retry count (4 retries = 5 total attempts)", func() {
+				sutConfig.Retry.Enabled = true
+				sutConfig.Retry.Attempts = 4 // 4 retries = 5 total attempts
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				By("4 attempts with timeout -> should resolve with fifth attempt", func() {
+					atomic.StoreInt32(&counter, 0)
+					atomic.StoreInt32(&attemptsWithTimeout, 4)
+
+					Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+						Should(
+							SatisfyAll(
+								BeDNSRecord("example.com.", A, "123.124.122.122"),
+								HaveResponseType(ResponseTypeRESOLVED),
+								HaveReturnCode(dns.RcodeSuccess),
+							))
+					Expect(atomic.LoadInt32(&counter)).Should(Equal(int32(5)))
 				})
 			})
 		})

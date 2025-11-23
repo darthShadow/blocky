@@ -7,6 +7,12 @@ import (
 
 const UpstreamDefaultCfgName = "default"
 
+// Retry configuration for upstream requests
+type Retry struct {
+	Enabled  bool `default:"true" yaml:"enabled"`
+	Attempts uint `default:"2"    yaml:"attempts"` // Number of retries (total attempts = 1 + Attempts)
+}
+
 // Upstreams upstream servers configuration
 type Upstreams struct {
 	Init      Init             `yaml:"init"`
@@ -14,6 +20,7 @@ type Upstreams struct {
 	Groups    UpstreamGroups   `yaml:"groups"`
 	Strategy  UpstreamStrategy `default:"parallel_best" yaml:"strategy"`
 	UserAgent string           `yaml:"userAgent"`
+	Retry     Retry            `yaml:"retry"`
 }
 
 type UpstreamGroups map[string][]Upstream
@@ -24,6 +31,11 @@ func (c *Upstreams) validate(logger *logrus.Entry) {
 	if !c.Timeout.IsAboveZero() {
 		logger.Warnf("upstreams.timeout <= 0, setting to %s", defaults.Timeout)
 		c.Timeout = defaults.Timeout
+	}
+
+	if c.Retry.Enabled && c.Retry.Attempts == 0 {
+		logger.Warnf("upstreams.retry.attempts is 0 but retry is enabled, setting to %d", defaults.Retry.Attempts)
+		c.Retry.Attempts = defaults.Retry.Attempts
 	}
 }
 
@@ -38,6 +50,11 @@ func (c *Upstreams) LogConfig(logger *logrus.Entry) {
 	log.WithIndent(logger, "  ", c.Init.LogConfig)
 
 	logger.Info("timeout: ", c.Timeout)
+	totalAttempts := uint(1)
+	if c.Retry.Enabled {
+		totalAttempts = 1 + c.Retry.Attempts
+	}
+	logger.Infof("retry: enabled=%t, retries=%d (total attempts=%d)", c.Retry.Enabled, c.Retry.Attempts, totalAttempts)
 	logger.Info("strategy: ", c.Strategy)
 	logger.Info("groups:")
 

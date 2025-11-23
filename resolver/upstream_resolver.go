@@ -28,7 +28,6 @@ import (
 
 const (
 	dnsContentType   = "application/dns-message"
-	retryAttempts    = 3
 	sha256HashLength = 32
 )
 
@@ -414,42 +413,57 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 		ip   net.IP
 	)
 
-	err = retry.Do(
-		func() error {
-			ip = ips.Current()
-			upstreamURL := r.upstreamClient.fmtURL(ip, r.cfg.Port, r.cfg.Path)
+	// Extract query execution logic
+	executeQuery := func() error {
+		ip = ips.Current()
+		upstreamURL := r.upstreamClient.fmtURL(ip, r.cfg.Port, r.cfg.Path)
 
-			ctx, cancel := context.WithTimeout(ctx, r.cfg.Timeout.ToDuration())
-			defer cancel()
+		queryCtx, cancel := context.WithTimeout(ctx, r.cfg.Timeout.ToDuration())
+		defer cancel()
 
-			response, rtt, err := r.upstreamClient.callExternal(ctx, request.Req, upstreamURL, request.Protocol)
-			if err != nil {
-				return fmt.Errorf("can't resolve request via upstream server %s (%s): %w", r.cfg, upstreamURL, err)
-			}
+		response, rtt, err := r.upstreamClient.callExternal(queryCtx, request.Req, upstreamURL, request.Protocol)
+		if err != nil {
+			return fmt.Errorf("can't resolve request via upstream server %s (%s): %w", r.cfg, upstreamURL, err)
+		}
 
-			resp = response
-			r.logResponse(logger, request, response, ip, rtt)
+		resp = response
+		r.logResponse(logger, request, response, ip, rtt)
 
-			return nil
-		},
-		retry.Context(ctx),
-		retry.Attempts(retryAttempts),
-		retry.DelayType(retry.FixedDelay),
-		retry.Delay(1*time.Millisecond),
-		retry.LastErrorOnly(true),
-		retry.RetryIf(isTimeout),
-		retry.OnRetry(func(n uint, err error) {
-			logger.WithFields(logrus.Fields{
-				"upstream":    r.cfg.String(),
-				"upstream_ip": ip.String(),
-				"question":    util.QuestionToString(request.Req.Question),
-				"attempt":     fmt.Sprintf("%d/%d", n+1, retryAttempts),
-			}).Debugf("%s, retrying...", err)
+		return nil
+	}
 
-			ips.Next()
-		}))
-	if err != nil {
-		return nil, fmt.Errorf("all %d attempts to resolve via upstream %s failed: %w", retryAttempts, r.cfg.String(), err)
+	// Execute with or without retry based on configuration
+	if r.cfg.Retry.Enabled && r.cfg.Retry.Attempts >= 1 {
+		// Use retry wrapper: total attempts = 1 (initial) + Attempts (retries)
+		totalAttempts := 1 + r.cfg.Retry.Attempts
+		err = retry.Do(
+			executeQuery,
+			retry.Context(ctx),
+			retry.Attempts(totalAttempts),
+			retry.DelayType(retry.FixedDelay),
+			retry.Delay(1*time.Millisecond),
+			retry.LastErrorOnly(true),
+			retry.RetryIf(isTimeout),
+			retry.OnRetry(func(n uint, err error) {
+				logger.WithFields(logrus.Fields{
+					"upstream":    r.cfg.String(),
+					"upstream_ip": ip.String(),
+					"question":    util.QuestionToString(request.Req.Question),
+					"attempt":     fmt.Sprintf("%d/%d", n+1, totalAttempts),
+				}).Debugf("%s, retrying...", err)
+
+				ips.Next()
+			}))
+		if err != nil {
+			return nil, fmt.Errorf("all %d attempts to resolve via upstream %s failed: %w",
+				totalAttempts, r.cfg.String(), err)
+		}
+	} else {
+		// Single attempt - call directly without retry wrapper
+		err = executeQuery()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &model.Response{Res: resp, Reason: fmt.Sprintf("RESOLVED (%s)", r.cfg)}, nil
