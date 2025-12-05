@@ -2,7 +2,19 @@
 .DEFAULT_GOAL:=help
 
 VERSION?=$(shell git describe --always --tags)
-BUILD_TIME?=$(shell date --iso-8601=seconds)
+BUILD_TIME?=$(shell date '+%s')
+
+# Cross-platform epoch conversion
+# Darwin (macOS) uses BSD date: -r epoch
+# Linux/others use GNU date: -d @epoch
+ifeq ($(shell uname -s),Darwin)
+  BUILD_TIME_FMT := $(shell date -r "${BUILD_TIME}" '+%Y%m%d-%H%M%S')
+  BUILD_TIME_ISO := $(shell date -r "${BUILD_TIME}" -Iseconds)
+else
+  BUILD_TIME_FMT := $(shell date -d "@${BUILD_TIME}" '+%Y%m%d-%H%M%S')
+  BUILD_TIME_ISO := $(shell date -d "@${BUILD_TIME}" -Iseconds)
+endif
+
 DOC_PATH?="main"
 DOCKER_IMAGE_NAME=spx01/blocky
 
@@ -17,7 +29,7 @@ GO_BUILD_LD_FLAGS:=\
 	-w \
 	-s \
 	-X github.com/0xERR0R/blocky/util.Version=${VERSION} \
-	-X github.com/0xERR0R/blocky/util.BuildTime=$(shell date -d "${BUILD_TIME}" '+%Y%m%d-%H%M%S') \
+	-X github.com/0xERR0R/blocky/util.BuildTime=${BUILD_TIME_FMT} \
 	-X github.com/0xERR0R/blocky/util.Architecture=${GOARCH}${GOARM}
 
 GO_BUILD_OUTPUT:=$(BIN_OUT_DIR)/$(BINARY_NAME)$(BINARY_SUFFIX)
@@ -78,7 +90,7 @@ test: check-go ## run tests
 e2e-test: check-go check-docker ## run e2e tests
 	docker buildx build \
 		--build-arg VERSION=blocky-e2e \
-		--build-arg BUILD_TIME=${BUILD_TIME} \
+		--build-arg BUILD_TIME=${BUILD_TIME_ISO} \
 		--build-arg GOPROXY \
 		--network=host \
 		-o type=docker \
@@ -90,7 +102,7 @@ e2e-test-coverage: check-go check-docker ## run e2e tests with code coverage
 	@echo "Building coverage-instrumented Docker image..."
 	docker buildx build \
 		--build-arg VERSION=blocky-e2e-coverage \
-		--build-arg BUILD_TIME=${BUILD_TIME} \
+		--build-arg BUILD_TIME=${BUILD_TIME_ISO} \
 		--build-arg GOPROXY \
 		--build-arg OPTS="-cover" \
 		--network=host \
@@ -153,7 +165,7 @@ fmt: check-go ## gofmt and goimports all go files
 docker-build: check-docker generate ## Build docker image
 	docker buildx build \
 		--build-arg VERSION=${VERSION} \
-		--build-arg BUILD_TIME=${BUILD_TIME} \
+		--build-arg BUILD_TIME=${BUILD_TIME_ISO} \
 		--build-arg GOPROXY \
 		--build-arg DOC_PATH=${DOC_PATH} \
 		--network=host \
