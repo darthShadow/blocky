@@ -330,7 +330,7 @@ var _ = Describe("Bootstrap", Label("bootstrap"), func() {
 
 				upstream.Host = "localhost" // force bootstrap to do resolve, and not just return the IP as is
 
-				r := newUpstreamResolverUnchecked(newUpstreamConfig(upstream, sutConfig.Upstreams), sut)
+				r := newUpstreamResolverUnchecked(newUpstreamConfig(upstream, sutConfig.Upstreams, ""), sut)
 
 				rsp, err := r.Resolve(ctx, mainReq)
 				Expect(err).Should(Succeed())

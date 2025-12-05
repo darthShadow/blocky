@@ -43,10 +43,11 @@ func (e *UpstreamServerError) Error() string {
 type upstreamConfig struct {
 	config.Upstreams
 	config.Upstream
+	TestDomain string // domain to query for init test (empty = example.com)
 }
 
-func newUpstreamConfig(upstream config.Upstream, cfg config.Upstreams) upstreamConfig {
-	return upstreamConfig{cfg, upstream}
+func newUpstreamConfig(upstream config.Upstream, cfg config.Upstreams, testDomain string) upstreamConfig {
+	return upstreamConfig{cfg, upstream, testDomain}
 }
 
 func (c upstreamConfig) String() string {
@@ -425,12 +426,17 @@ func (r *UpstreamResolver) log(ctx context.Context) (context.Context, *logrus.En
 
 // testResolve sends a test query to verify the upstream is reachable and working
 func (r *UpstreamResolver) testResolve(ctx context.Context) error {
-	// example.com MUST always resolve. See SUDN resolver
-	request := newRequest("example.com.", dns.Type(dns.TypeA))
+	// Use configured test domain, or default to example.com (which MUST always resolve per SUDN)
+	testDomain := r.cfg.TestDomain
+	if testDomain == "" {
+		testDomain = "example.com"
+	}
+
+	request := newRequest(testDomain+".", dns.Type(dns.TypeA))
 
 	_, err := r.Resolve(ctx, request)
 	if err != nil {
-		return fmt.Errorf("test query to example.com failed: %w", err)
+		return fmt.Errorf("test query to %s failed: %w", testDomain, err)
 	}
 
 	return nil

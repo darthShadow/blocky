@@ -332,7 +332,7 @@ func newBootstrapedResolvers(
 			continue
 		}
 
-		resolver := newUpstreamResolverUnchecked(newUpstreamConfig(upstream, upstreamsCfg), b)
+		resolver := newUpstreamResolverUnchecked(newUpstreamConfig(upstream, upstreamsCfg, ""), b)
 
 		upstreamIPs[resolver] = ips
 	}

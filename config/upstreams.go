@@ -73,7 +73,8 @@ func (c *Upstreams) LogConfig(logger *logrus.Entry) {
 type UpstreamGroup struct {
 	Upstreams
 
-	Name string // group name
+	Name       string // group name
+	TestDomain string // domain to query for init test (empty = example.com)
 }
 
 // NewUpstreamGroup creates an UpstreamGroup with the given name and upstreams.

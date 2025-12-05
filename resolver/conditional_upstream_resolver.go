@@ -168,6 +168,11 @@ func NewConditionalUpstreamResolver(
 		// Override with conditional-specific init strategy
 		groupCfg.Init = cfg.Init
 
+		// Set test domain for init verification (skip for catch-all "." which uses default)
+		if domain != "." {
+			groupCfg.TestDomain = "_blocky-init." + strings.TrimSuffix(domain, ".")
+		}
+
 		var r Resolver
 		var err error
 

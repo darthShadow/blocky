@@ -35,7 +35,7 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 		ctx, cancelFn = context.WithCancel(context.Background())
 		DeferCleanup(cancelFn)
 
-		sutConfig = newUpstreamConfig(config.Upstream{Host: "localhost"}, defaultUpstreamsConfig)
+		sutConfig = newUpstreamConfig(config.Upstream{Host: "localhost"}, defaultUpstreamsConfig, "")
 	})
 
 	JustBeforeEach(func() {
@@ -61,6 +61,31 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 			sut.LogConfig(logger)
 
 			Expect(hook.Calls).ShouldNot(BeEmpty())
+		})
+	})
+
+	Describe("testResolve", func() {
+		When("TestDomain is configured", func() {
+			It("should query the configured test domain instead of example.com", func() {
+				var queriedDomain string
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerFn(func(request *dns.Msg) *dns.Msg {
+					queriedDomain = request.Question[0].Name
+
+					response, err := util.NewMsgWithAnswer(request.Question[0].Name, 300, A, "192.0.2.1")
+					Expect(err).Should(Succeed())
+					response.SetReply(request)
+
+					return response
+				})
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sutConfig.TestDomain = "_blocky-init.home"
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				err := sut.testResolve(ctx)
+				Expect(err).Should(Succeed())
+				Expect(queriedDomain).Should(Equal("_blocky-init.home."))
+			})
 		})
 	})
 

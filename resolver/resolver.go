@@ -271,7 +271,7 @@ func createGroupResolvers(
 	resolvers := make([]*upstreamResolverStatus, 0, len(upstreams))
 
 	for _, upstream := range upstreams {
-		resolver, err := NewUpstreamResolver(ctx, newUpstreamConfig(upstream, cfg.Upstreams), bootstrap)
+		resolver, err := NewUpstreamResolver(ctx, newUpstreamConfig(upstream, cfg.Upstreams, cfg.TestDomain), bootstrap)
 		if err != nil {
 			continue // err was already logged
 		}

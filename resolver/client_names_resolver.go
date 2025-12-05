@@ -34,7 +34,7 @@ func NewClientNamesResolver(ctx context.Context,
 ) (cr *ClientNamesResolver, err error) {
 	var r Resolver
 	if !cfg.Upstream.IsDefault() {
-		r, err = NewUpstreamResolver(ctx, newUpstreamConfig(cfg.Upstream, upstreamsCfg), bootstrap)
+		r, err = NewUpstreamResolver(ctx, newUpstreamConfig(cfg.Upstream, upstreamsCfg, ""), bootstrap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create upstream resolver for client names lookup: %w", err)
 		}
