@@ -438,11 +438,20 @@ func (r *UpstreamResolver) testResolve(ctx context.Context) error {
 
 // Resolve calls external resolver
 func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) (response *model.Response, err error) {
+	resolveStart := time.Now()
 	ctx, logger := r.log(ctx)
 
+	bootstrapStart := time.Now()
 	ips, err := r.bootstrap.UpstreamIPs(ctx, r)
+	bootstrapElapsed := time.Since(bootstrapStart)
+
 	if err != nil {
+		logger.WithField("bootstrap_ms", bootstrapElapsed.Milliseconds()).Debug("bootstrap IP resolution failed")
 		return nil, fmt.Errorf("failed to resolve upstream IPs for %s: %w", r.cfg.String(), err)
+	}
+
+	if bootstrapElapsed > 250*time.Millisecond {
+		logger.WithField("bootstrap_ms", bootstrapElapsed.Milliseconds()).Debug("bootstrap IP resolution slow")
 	}
 
 	var (
@@ -459,6 +468,7 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 		defer cancel()
 
 		response, rtt, err := r.upstreamClient.callExternal(queryCtx, request.Req, upstreamURL, request.Protocol)
+
 		if err != nil {
 			return fmt.Errorf("can't resolve request via upstream server %s (%s): %w", r.cfg, upstreamURL, err)
 		}
@@ -468,6 +478,11 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 
 		return nil
 	}
+
+	defer func() {
+		totalElapsed := time.Since(resolveStart)
+		logger.WithField("total_upstream_ms", totalElapsed.Milliseconds()).Debug("upstream resolver completed")
+	}()
 
 	// Execute with or without retry based on configuration
 	if r.cfg.Retry.Enabled && r.cfg.Retry.Attempts >= 1 {

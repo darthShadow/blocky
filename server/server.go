@@ -528,14 +528,44 @@ func (s *Server) handleReq(ctx context.Context, request *model.Request, w msgWri
 }
 
 func (s *Server) resolve(ctx context.Context, request *model.Request) (response *model.Response, rerr error) {
+	resolveStart := time.Now()
+
+	// Log total resolution time on exit (declared first, runs second due to LIFO)
+	defer func() {
+		elapsed := time.Since(resolveStart)
+		logger := log.FromCtx(ctx)
+		if rerr != nil {
+			logger.WithField("elapsed_ms", elapsed.Milliseconds()).Debug("resolve completed with error")
+		} else {
+			logger.WithField("elapsed_ms", elapsed.Milliseconds()).Debug("resolve completed successfully")
+		}
+	}()
+
+	// Panic recovery (declared second, runs first due to LIFO - sets rerr before logging)
 	defer func() {
 		if val := recover(); val != nil {
 			rerr = fmt.Errorf("panic occurred: %v", val)
 		}
 	}()
 
-	contextUpstreamTimeoutMultiplier := 100
-	timeoutDuration := time.Duration(contextUpstreamTimeoutMultiplier) * s.cfg.Upstreams.Timeout.ToDuration()
+	// Calculate server-level timeout based on retry configuration
+	// This timeout is a safety net for the entire resolution chain
+	totalAttempts := 1
+	if s.cfg.Upstreams.Retry.Enabled {
+		totalAttempts = 1 + int(s.cfg.Upstreams.Retry.Attempts)
+	}
+
+	// Server timeout = upstream timeout × total attempts × safety margin
+	// The safety margin (3x) accounts for other resolvers in the chain
+	// (e.g., ClientNamesResolver doing reverse DNS, conditional upstreams)
+	const safetyMultiplier = 3
+	timeoutDuration := time.Duration(totalAttempts*safetyMultiplier) * s.cfg.Upstreams.Timeout.ToDuration()
+
+	// Ensure minimum timeout to handle resolver chain overhead
+	const minServerTimeout = 5 * time.Second
+	if timeoutDuration < minServerTimeout {
+		timeoutDuration = minServerTimeout
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeoutDuration)
 

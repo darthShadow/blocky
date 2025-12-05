@@ -143,6 +143,7 @@ func (r *ParallelBestResolver) String() string {
 
 // Resolve sends the query request to multiple upstream resolvers and returns the fastest result
 func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
+	parallelStart := time.Now()
 	ctx, logger := r.log(ctx)
 
 	allResolvers := *r.resolvers.Load()
@@ -160,16 +161,23 @@ func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Reque
 	resolvers := pickRandom(ctx, allResolvers, r.resolverCount)
 	ch := make(chan requestResponse, len(resolvers))
 
+	logger.WithField("resolver_count", len(resolvers)).Debug("starting parallel resolution")
+
 	for _, resolver := range resolvers {
 		logger.WithField("resolver", resolver.resolver).Debug("delegating to resolver")
 
 		go resolver.resolveToChan(ctx, request, ch)
 	}
 
-	response, collectedErrors := evaluateResponses(logger, ch, resolvers)
+	response, collectedErrors := evaluateResponses(logger, ch, resolvers, parallelStart)
 	if response != nil {
+		elapsed := time.Since(parallelStart)
+		logger.WithField("parallel_ms", elapsed.Milliseconds()).Debug("parallel resolution succeeded")
 		return response, nil
 	}
+
+	elapsed := time.Since(parallelStart)
+	logger.WithField("parallel_ms", elapsed.Milliseconds()).Debug("all parallel resolvers failed")
 
 	if !r.retryWithDifferentResolver {
 		return nil, fmt.Errorf("resolution failed: %w", errors.Join(collectedErrors...))
@@ -179,13 +187,20 @@ func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Reque
 }
 
 func evaluateResponses(
-	logger *logrus.Entry, ch chan requestResponse, resolvers []*upstreamResolverStatus,
+	logger *logrus.Entry, ch chan requestResponse, resolvers []*upstreamResolverStatus, startTime time.Time,
 ) (*model.Response, []error) {
 	collectedErrors := make([]error, 0, len(resolvers))
+	responseNum := 0
 
 	for len(collectedErrors) < len(resolvers) {
 		result := <-ch
-		logger := logger.WithField("resolver", *result.resolver)
+		responseNum++
+		elapsed := time.Since(startTime)
+		logger := logger.WithFields(logrus.Fields{
+			"resolver":     *result.resolver,
+			"response_num": responseNum,
+			"elapsed_ms":   elapsed.Milliseconds(),
+		})
 
 		if result.err != nil {
 			logger.Debug("resolution failed from resolver, cause: ", result.err)
