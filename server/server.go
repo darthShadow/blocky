@@ -519,6 +519,7 @@ func (s *Server) handleReq(ctx context.Context, request *model.Request, w msgWri
 
 		m := new(dns.Msg)
 		m.SetRcode(request.Req, dns.RcodeServerFailure)
+		m.RecursionAvailable = request.Req.RecursionDesired
 		err := w.WriteMsg(m)
 		util.LogOnError(ctx, "can't write message: ", err)
 	} else {

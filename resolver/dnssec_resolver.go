@@ -127,6 +127,7 @@ func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*
 func createServFailResponseDNSSEC(request *dns.Msg, reason string) *model.Response {
 	response := new(dns.Msg)
 	response.SetRcode(request, dns.RcodeServerFailure)
+	response.RecursionAvailable = request.RecursionDesired
 
 	// Add EDE (Extended DNS Error) code for DNSSEC Bogus
 	// RFC 8914: https://www.rfc-editor.org/rfc/rfc8914.html#section-5.2
